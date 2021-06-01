@@ -425,13 +425,11 @@ def main():
                 logging.debug('Looking for model files in "{}"...'.format(model_dir))
                 output_graph_path = glob(model_dir + "/*.pbmm")[0]
                 lang_scorer_path = glob(model_dir + "/*.scorer")[0]
-            kenlm_path = 'dependencies/kenlm/build/bin'
+            kenlm_path = os.path.join(os.path.dirname(__file__),'../dependencies/kenlm/build/bin')
             if not path.exists(kenlm_path):
                 kenlm_path = None
-            deepspeech_path = 'dependencies/deepspeech'
-            if not path.exists(deepspeech_path):
-                deepspeech_path = None
-            if kenlm_path and deepspeech_path and not args.stt_no_own_lm:
+            if kenlm_path and not args.stt_no_own_lm:
+                print('Using kenlm from {}'.format(kenlm_path))
                 tc = read_script(script_path)
                 if not tc.clean_text.strip():
                     logging.error('Cleaned transcript is empty for {}'.format(path.basename(script_path)))
@@ -452,8 +450,8 @@ def main():
 
                     # Generate scorer
                     create_bundle(alphabet_path, scorer_path + '.' + 'lm.binary', scorer_path + '.' + 'vocab-500000.txt', scorer_path, False, 0.931289039105002, 1.1834137581510284)
-                    os.remove(scorer_path + '.' + 'lm.binary')
-                    os.remove(scorer_path + '.' + 'vocab-500000.txt')
+                   # os.remove(scorer_path + '.' + 'lm.binary')
+#                    os.remove(scorer_path + '.' + 'vocab-500000.txt')
 
                     generated_scorer = True
             else:
@@ -472,17 +470,26 @@ def main():
                                  aggressiveness=args.audio_vad_aggressiveness)
 
             def pre_filter():
+                last_segment = (b'', 0, 0)
                 for i, segment in enumerate(segments):
                     segment_buffer, time_start, time_end = segment
                     time_length = time_end - time_start
-                    if args.stt_min_duration and time_length < args.stt_min_duration:
-                        logging.info('Fragment {}: Audio too short for STT'.format(i))
+                    segment_buffer2 = last_segment[0] + segment_buffer
+                    time_start2 = last_segment[1] if last_segment[1] else time_start
+                    time_length2 = time_end - time_start2
+                    if args.stt_max_duration and time_length2 > args.stt_max_duration:
+                        if time_length > args.stt_max_duration:
+                            logging.info('Fragment {}: Audio too long for STT'.format(i))
+                            continue
+                        yield (time_start, time_end, np.frombuffer(segment_buffer, dtype=np.int16))
+                        last_segment = (b'', 0, 0)
+                    elif args.stt_min_duration and time_length2 < args.stt_min_duration:
+                        print('Small segment')
+                        last_segment = (segment_buffer2, time_start2, time_end)
                         continue
-                    if args.stt_max_duration and time_length > args.stt_max_duration:
-                        logging.info('Fragment {}: Audio too long for STT'.format(i))
-                        continue
-                    yield (time_start, time_end, np.frombuffer(segment_buffer, dtype=np.int16))
-
+                    else:
+                        yield (time_start2, time_end, np.frombuffer(segment_buffer2, dtype=np.int16))
+                        last_segment = (b'', 0, 0)
             samples = list(progress(pre_filter(), desc='VAD splitting'))
 
             pool = multiprocessing.Pool(initializer=init_stt,
@@ -506,8 +513,8 @@ def main():
                 tlog_file.write(json.dumps(fragments, indent=4 if args.output_pretty else None, ensure_ascii=False))
 
             # Remove scorer if generated
-            if generated_scorer:
-                os.remove(scorer_path)
+#            if generated_scorer:
+#                os.remove(scorer_path)
         if not path.isfile(tlog_path):
             fail('Problem loading transcript from "{}"'.format(tlog_path))
         to_align.append((tlog_path, script_path, aligned_path))
